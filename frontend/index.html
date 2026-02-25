@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KukuTV A2A Script Generator</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #ff4d4d;
+            --bg: #0a0a0c;
+            --glass: rgba(255, 255, 255, 0.05);
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: #fff;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 900px;
+            padding: 40px;
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            animation: fadeIn 0.8s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        h1 {
+            font-weight: 600;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #fff, var(--primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            color: #aaa;
+            margin-bottom: 40px;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #ccc;
+            font-size: 0.9rem;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: #fff;
+            font-family: inherit;
+            font-size: 1rem;
+            resize: vertical;
+            transition: border-color 0.3s;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        button {
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.3s;
+        }
+
+        button:hover {
+            background: #e60000;
+            transform: scale(1.02);
+        }
+
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        .pipeline-view {
+            margin-top: 40px;
+            display: none;
+        }
+
+        .step {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            opacity: 0.4;
+            transition: opacity 0.5s;
+        }
+
+        .step.active {
+            opacity: 1;
+        }
+
+        .step-icon {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: var(--border);
+            margin-right: 15px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 0.8rem;
+        }
+
+        .step.done .step-icon {
+            background: #4caf50;
+        }
+
+        .result-view {
+            margin-top: 40px;
+            padding: 30px;
+            background: rgba(255, 77, 77, 0.05);
+            border: 1px solid rgba(255, 77, 77, 0.2);
+            border-radius: 16px;
+            display: none;
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: var(--primary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.6;
+            color: #eee;
+            font-size: 1.1rem;
+        }
+
+        .loader {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>KukuTV Ad Generator</h1>
+        <p class="subtitle">Agent-to-Agent (A2A) Script Generation Pipeline</p>
+        
+        <div id="input-form">
+            <div class="form-group">
+                <label>Episode Summary</label>
+                <textarea id="summary" rows="4" placeholder="e.g. Aarav discovers the truth about his past..."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Peak Moments (one per line)</label>
+                <textarea id="peaks" rows="3" placeholder="e.g. The hidden letter revealed.&#10;The confrontation in the rain."></textarea>
+            </div>
+            <button id="generate-btn" onclick="generate()">Generate Script</button>
+        </div>
+
+        <div id="pipeline" class="pipeline-view">
+            <div class="step" id="step-1">
+                <div class="step-icon">1</div>
+                <span>Input Structurer Agent</span>
+            </div>
+            <div class="step" id="step-2">
+                <div class="step-icon">2</div>
+                <span>Genre Router Agent</span>
+            </div>
+            <div class="step" id="step-3">
+                <div class="step-icon">3</div>
+                <span>Speaker Format Agent</span>
+            </div>
+            <div class="step" id="step-4">
+                <div class="step-icon">4</div>
+                <span>Script Generator Agent</span>
+            </div>
+            <div class="step" id="step-5">
+                <div class="step-icon">5</div>
+                <span>Script Validator Agent</span>
+            </div>
+        </div>
+
+        <div id="result" class="result-view">
+            <div class="result-header">
+                <h3>Final Script</h3>
+                <div>
+                   <span id="genre-badge" class="badge">Genre</span>
+                   <span id="format-badge" class="badge">Format</span>
+                </div>
+            </div>
+            <pre id="script-content"></pre>
+            <button onclick="copyScript()" style="margin-top: 20px; background: transparent; border: 1px solid var(--border);">Copy All</button>
+            <button onclick="reset()" style="margin-top: 20px; background: transparent; border: 1px solid var(--border); margin-left: 10px;">New Script</button>
+        </div>
+    </div>
+
+    <script>
+        async function generate() {
+            const summary = document.getElementById('summary').value;
+            const peaks = document.getElementById('peaks').value.split('\n').filter(p => p.trim());
+            const btn = document.getElementById('generate-btn');
+            
+            if (!summary || peaks.length === 0) {
+                alert('Please fill in both fields');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = 'Orchestrating Agents... <div class="loader"></div>';
+            
+            document.getElementById('pipeline').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+
+            // Simulate pipeline progress (actual progress is fast, but we show it for UX)
+            const steps = [1, 2, 3, 4, 5];
+            for (let i = 0; i < steps.length; i++) {
+                const el = document.getElementById(`step-${steps[i]}`);
+                el.classList.add('active');
+                await new Promise(r => setTimeout(r, 600)); // Visual delay
+                if (i < 4) el.classList.add('done');
+            }
+
+            try {
+                const response = await fetch('http://localhost:8000/api/generate-script', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        episode_summary: summary,
+                        peak_moments: peaks
+                    })
+                });
+
+                const data = await response.json();
+                
+                document.getElementById('step-5').classList.add('done');
+                document.getElementById('result').style.display = 'block';
+                document.getElementById('script-content').innerText = data.script;
+                document.getElementById('genre-badge').innerText = data.genre.replace('_agent', '');
+                document.getElementById('format-badge').innerText = data.speaker_format.replace('_', ' ');
+                
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+
+            } catch (err) {
+                alert('Error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Generate Script';
+            }
+        }
+
+        function copyScript() {
+            const text = document.getElementById('script-content').innerText;
+            navigator.clipboard.writeText(text);
+            alert('Copied to clipboard!');
+        }
+
+        function reset() {
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('pipeline').style.display = 'none';
+            document.querySelectorAll('.step').forEach(s => {
+                s.classList.remove('active', 'done');
+            });
+            document.getElementById('summary').value = '';
+            document.getElementById('peaks').value = '';
+        }
+    </script>
+</body>
+</html>
