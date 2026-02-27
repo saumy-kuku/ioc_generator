@@ -5,19 +5,14 @@ from agents.script_agent import ScriptAgent
 from agents.validator_agent import ValidatorAgent
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.utils.message import new_agent_text_message
-from a2a.utils.task import completed_task
+from a2a.utils.message import new_agent_text_message, get_message_text
+from a2a.types import TaskStatusUpdateEvent, TaskState, TaskStatus
 import logging
-import json
-import asyncio
 
 logger = logging.getLogger(__name__)
 
+
 class PipelineHost(AgentExecutor):
-    """
-    KukuTV A2A Pipeline Host Agent.
-    Orchestrates the ad script generation pipeline by calling specialized agents internally.
-    """
     def __init__(self):
         self.structurer = StructurerAgent()
         self.router = RouterAgent()
@@ -25,66 +20,72 @@ class PipelineHost(AgentExecutor):
         self.script_writer = ScriptAgent()
         self.validator = ValidatorAgent()
 
+    async def _run_step(self, step_name: str, agent, input_text: str) -> str | None:
+        """Runs a single agent step with isolated error handling — never raises."""
+        try:
+            logger.info(f">>> Running step: {step_name}")
+            result = await agent.run_logic(input_text)
+            logger.info(f">>> Step '{step_name}' completed. Output length: {len(result)}")
+            return result
+        except Exception as e:
+            logger.error(f">>> Step '{step_name}' FAILED: {str(e)}", exc_info=True)
+            return None
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         logger.info(f"PipelineHost.execute() started for task: {context.task_id}")
-        user_input = context.get_user_input()
+
+        user_input = get_message_text(context.message) if context.message else None
         if not user_input:
             logger.warning("PipelineHost: No user input found in context")
+            await event_queue.enqueue_event(new_agent_text_message(text="ERROR: No input received."))
             return
 
-        try:
-            print(f">>> [HOST] PipelineHost.execute() starting for {context.task_id}")
-            logger.info(f"PipelineHost: Input: {user_input[:50]}...")
-            
-            # Step 1: Structure Input
-            print(">>> [HOST] Step 1: Structurer...")
-            await event_queue.enqueue_event(new_agent_text_message(
-                text="[1/5] Analyzing show structure...",
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
-            structure = await self.structurer.run_logic(user_input)
-            
-            # Step 2: Route Format
-            print(">>> [HOST] Step 2: Router...")
-            await event_queue.enqueue_event(new_agent_text_message(
-                text="[2/5] Selecting ad format...",
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
-            ad_format = await self.router.run_logic(structure)
-            
-            # Step 3: Define Speakers
-            print(">>> [HOST] Step 3: Speaker...")
-            await event_queue.enqueue_event(new_agent_text_message(
-                text="[3/5] Creating speaker profiles...",
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
-            speakers = await self.speaker.run_logic(ad_format)
-            
-            # Step 4: Write Script
-            print(">>> [HOST] Step 4: Script...")
-            await event_queue.enqueue_event(new_agent_text_message(
-                text="[4/5] Drafting ad script...",
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
-            context_data = f"Structure: {structure}\nFormat: {ad_format}\nSpeakers: {speakers}"
-            script = await self.script_writer.run_logic(context_data)
-            
-            # Step 5: Validate Script
-            print(">>> [HOST] Step 5: Validator...")
-            await event_queue.enqueue_event(new_agent_text_message(
-                text="[5/5] Validating final script...",
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
-            validation = await self.validator.run_logic(script)
-            
-            print(">>> [HOST] Step 6: Finalizing...")
-            final_output = f"""
-### Show Structure
+        logger.info(f"PipelineHost: Input received ({len(user_input)} chars): {user_input[:80]}...")
+
+        errors = []
+
+        # Step 1: Structure Input
+        await event_queue.enqueue_event(new_agent_text_message(text="[1/5] Analyzing show structure..."))
+        structure = await self._run_step("Structurer", self.structurer, user_input)
+        if not structure:
+            errors.append("Structurer agent failed")
+            structure = f"(Structurer failed — using raw input)\n{user_input}"
+
+        # Step 2: Route Format
+        await event_queue.enqueue_event(new_agent_text_message(text="[2/5] Selecting ad format..."))
+        ad_format = await self._run_step("Router", self.router, structure)
+        if not ad_format:
+            errors.append("Router agent failed")
+            ad_format = "Multi-Speaker format (fallback)"
+
+        # Step 3: Define Speakers
+        await event_queue.enqueue_event(new_agent_text_message(text="[3/5] Creating speaker profiles..."))
+        speakers = await self._run_step("Speaker", self.speaker, ad_format)
+        if not speakers:
+            errors.append("Speaker agent failed")
+            speakers = "Speaker 0: High energy narrator (fallback)"
+
+        # Step 4: Write Script
+        await event_queue.enqueue_event(new_agent_text_message(text="[4/5] Drafting ad script..."))
+        context_data = f"Structure: {structure}\nFormat: {ad_format}\nSpeakers: {speakers}"
+        script = await self._run_step("ScriptWriter", self.script_writer, context_data)
+        if not script:
+            errors.append("Script writer agent failed")
+            script = "(Script generation failed)"
+
+        # Step 5: Validate Script
+        await event_queue.enqueue_event(new_agent_text_message(text="[5/5] Validating final script..."))
+        validation = await self._run_step("Validator", self.validator, script)
+        if not validation:
+            errors.append("Validator agent failed")
+            validation = "(Validation skipped)"
+
+        # Build final output
+        error_section = ""
+        if errors:
+            error_section = "### ⚠️ Pipeline Warnings\n" + "\n".join(f"- {e}" for e in errors) + "\n\n"
+
+        final_output = f"""{error_section}### Show Structure
 {structure}
 
 ### Ad Format
@@ -99,38 +100,21 @@ class PipelineHost(AgentExecutor):
 ### Validation Report
 {validation}
 """
-            # Send Final Message
-            logger.info("Enqueuing final message...")
-            await event_queue.enqueue_event(new_agent_text_message(
-                text=final_output,
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
 
-            # Mark Task Completed
-            if context.current_task:
-                logger.info("Marking task as COMPLETED...")
-                await event_queue.enqueue_event(completed_task(context.current_task))
-            
-            logger.info("PipelineHost: execute() finished successfully.")
+        logger.info("Enqueueing final output...")
+        await event_queue.enqueue_event(new_agent_text_message(text=final_output))
 
-        except Exception as e:
-            error_msg = f"PipelineHost Error: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            await event_queue.enqueue_event(new_agent_text_message(
-                text=f"ERROR: {error_msg}",
-                task_id=context.task_id,
-                context_id=context.context_id
-            ))
-            # Mark task as failed if possible
-            if context.current_task:
-                from a2a.types import TaskStatusUpdateEvent, TaskState, TaskStatus
-                from a2a.utils.message import new_agent_text_message
-                await event_queue.enqueue_event(TaskStatusUpdateEvent(
-                    task_id=context.task_id,
-                    status=TaskStatus(state=TaskState.failed, message=new_agent_text_message(text=error_msg))
-                ))
-            raise
+        if context.current_task:
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    taskId=context.task_id,
+                    contextId=context.context_id,
+                    status=TaskStatus(state=TaskState.completed),
+                    final=True
+                )
+            )
+
+        logger.info("PipelineHost: execute() finished successfully.")
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         logger.info(f"PipelineHost: Canceling task {context.task_id}")

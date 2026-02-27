@@ -1,5 +1,4 @@
 import os
-import asyncio
 import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,21 +7,19 @@ from dotenv import load_dotenv
 import logging
 import httpx
 
-from a2a.client import A2AClient
+from a2a.client import A2AClient, ClientFactory
 from a2a.client.card_resolver import A2ACardResolver
 from a2a.types import (
-    SendStreamingMessageRequest, 
-    MessageSendParams, 
-    Message, 
-    Part, 
-    TextPart, 
+    SendStreamingMessageRequest,
+    MessageSendParams,
+    Message,
+    Part,
+    TextPart,
     Role,
-    SendStreamingMessageSuccessResponse,
-    JSONRPCErrorResponse
+    JSONRPCErrorResponse,
 )
 from a2a.utils.message import get_message_text
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -30,7 +27,6 @@ load_dotenv()
 
 app = FastAPI(title="KukuTV Ad Script Generator API")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,105 +35,100 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class GenerateRequest(BaseModel):
     prompt: str | None = None
     episode_summary: str | None = None
     peak_moments: list[str] | None = None
+
 
 @app.post("/api/generate-script")
 async def generate_script(request: GenerateRequest):
     """
     Client-facing endpoint that triggers the A2A Pipeline.
     """
-    # Construct prompt from available fields
     if request.episode_summary and request.peak_moments:
-        full_prompt = f"Episode Summary: {request.episode_summary}\nPeak Moments: {', '.join(request.peak_moments)}"
+        full_prompt = (
+            f"Episode Summary: {request.episode_summary}\n"
+            f"Peak Moments: {', '.join(request.peak_moments)}"
+        )
     else:
         full_prompt = request.prompt or "Generic script request"
 
-    print(f"\n>>> [DEBUG] Received request. Constructed prompt: {full_prompt[:50]}...")
+    logger.info(f"Received request. Prompt: {full_prompt[:80]}...")
+
     port = os.getenv("A2A_SERVER_PORT", "9999")
     agent_url = f"http://localhost:{port}/"
-    
+
     try:
-        print(f">>> [DEBUG] Connecting to A2A Agent at {agent_url}...")
-        logger.info(f"Connecting to A2A Agent at {agent_url}...")
-        
         async with httpx.AsyncClient(timeout=120.0) as http_client:
             # 1. Resolve Agent Card
             resolver = A2ACardResolver(httpx_client=http_client, base_url=agent_url)
-            # Correct method name is get_agent_card()
             agent_card = await resolver.get_agent_card()
-            print(f">>> [DEBUG] Agent Card resolved: {agent_card.name}")
-            
-            # 2. Initialize A2AClient
-            client = A2AClient(httpx_client=http_client, agent_card=agent_card)
-            print(">>> [DEBUG] A2AClient initialized.")
+            logger.info(f"Agent Card resolved: {agent_card.name}")
 
-            # 3. Prepare Payload
-            send_message_payload = {
-                'message': {
-                    'role': Role.user,
-                    'parts': [{'kind': 'text', 'text': full_prompt}],
-                    'messageId': uuid.uuid4().hex,
-                },
-            }
-            
-            streaming_request = SendStreamingMessageRequest(
-                id=str(uuid.uuid4()),
-                params=MessageSendParams(**send_message_payload)
+            # 2. Initialize client via ClientFactory (A2AClient is deprecated)
+            client = await ClientFactory.create_client(httpx_client=http_client, agent_card=agent_card)
+
+            # BUG FIX #5: Use proper Part/TextPart objects, not raw dicts
+            message = Message(
+                role=Role.user,
+                parts=[Part(root=TextPart(text=full_prompt))],
+                messageId=uuid.uuid4().hex,
             )
 
-            # 4. Consume stream
-            messages = []
-            print(">>> [DEBUG] Sending message & starting stream consumption...")
-            
-            # client.send_message_streaming returns an AsyncGenerator
+            streaming_request = SendStreamingMessageRequest(
+                id=str(uuid.uuid4()),
+                params=MessageSendParams(message=message)
+            )
+
+            # 4. Consume stream — collect all Message chunks
+            all_messages = []
+            logger.info("Sending message and consuming stream...")
+
             async for chunk in client.send_message_streaming(streaming_request):
-                # chunk is SendStreamingMessageResponse
                 resp = chunk.root
-                
+
                 if isinstance(resp, JSONRPCErrorResponse):
                     error_detail = resp.error.message
-                    print(f">>> [DEBUG] A2A Error Response: {error_detail}")
+                    logger.error(f"A2A Error Response: {error_detail}")
                     raise HTTPException(status_code=500, detail=f"A2A Error: {error_detail}")
-                
-                # resp is SendStreamingMessageSuccessResponse
+
                 result = resp.result
                 if isinstance(result, Message):
                     text = get_message_text(result)
-                    print(f">>> [DEBUG] Received Message: {text[:50]}...")
-                    messages.append(text)
-                elif hasattr(result, 'status') and hasattr(result.status, 'state'):
-                    # For TaskStatusUpdateEvent or Task objects with status
-                    print(f">>> [DEBUG] Task Progress: {result.status.state}")
+                    logger.info(f"Stream chunk received: {text[:80]}...")
+                    all_messages.append(text)
+                elif hasattr(result, "status") and hasattr(result.status, "state"):
+                    logger.info(f"Task state update: {result.status.state}")
                 else:
-                    print(f">>> [DEBUG] Received other event type: {type(result)}")
+                    logger.debug(f"Received event: {type(result).__name__}")
 
-            print(f">>> [DEBUG] Stream consumption finished. Total messages: {len(messages)}")
-            
-            if not messages:
-                print(">>> [DEBUG] ERROR: No messages received!")
-                raise HTTPException(status_code=500, detail="No output received from agent")
+            logger.info(f"Stream finished. Total chunks received: {len(all_messages)}")
 
-            # The last message enqueued by PipelineHost is the comprehensive final output
-            final_text = messages[-1]
-            print(f">>> [DEBUG] Final text length: {len(final_text)}")
+            if not all_messages:
+                raise HTTPException(status_code=500, detail="No output received from agent pipeline")
+
+            # Progress messages are like "[1/5]...", final output is the last (and longest) message
+            final_text = max(all_messages, key=len)
 
             return {
                 "script": final_text,
                 "genre": "kukufm_drama",
-                "speaker_format": "multi_speaker" if "Multi-Speaker" in final_text else "single_speaker"
+                "speaker_format": "multi_speaker" if "Multi-Speaker" in final_text else "single_speaker",
             }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error calling A2A Agent: {str(e)}", exc_info=True)
-        print(f">>> [DEBUG] EXCEPTION in main.py: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
 
 if __name__ == "__main__":
     import uvicorn
